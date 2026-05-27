@@ -1,0 +1,14 @@
+[package]
+name = "kato-xrnu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Statistical X-ray response non-uniformity (XRNU) correction for microstrip detectors (MYTHEN), implementing the SS/MS processes of Kato et al. (2019) and the OSS process of Kato & Shigeta (2020)."
+repository = "https://github.com/stevek/kato-xrnu"
+keywords = ["xrd", "powder-diffraction", "mythen", "detector", "synchrotron"]
+categories = ["science"]
+
+# Zero runtime dependencies by design (dependency-light, DAQ-side use).
+[dependencies]
+
+[dev-dependencies]
