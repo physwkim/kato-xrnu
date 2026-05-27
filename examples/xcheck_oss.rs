@@ -5,7 +5,8 @@
 //! factors the crate computes for each weight. The same input matrix is
 //! re-evaluated independently in Wolfram Language to confirm the Rust code
 //! matches the paper's eq.(11) `σ_k = sample std of c_OSS_k` definition
-//! ([`OssWeight::SampleStd`]) and its alternatives to machine precision.
+//! ([`OssWeight::SampleStd`]) and its alternatives to machine precision. The
+//! Wolfram side is checked in at `verification/oss_eq11_check.wl`.
 //!
 //! Wolfram `SampleStd` (eq. 11) reference, this exact case (18 digits):
 //!   0: 1.019590268391508276   4: 1.057813959519594330

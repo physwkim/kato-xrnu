@@ -87,6 +87,21 @@ which reproduces the central result (1280 channels, block 8, 10⁶ counts):
   multi-step (MS)              TFU =  0.156 %   PNR =   1.56
 ```
 
+## Verification
+
+The OSS weighting defaults to Kato & Shigeta (2020) eq. (11) — `σ_k` is the
+sample standard deviation of the local factors over each overlap level
+(`OssWeight::SampleStd`). It is cross-verified against an independent Wolfram
+Language implementation of eq. (10)–(11):
+
+```sh
+cargo run --example xcheck_oss                     # Rust factors, all three weights
+wolframscript -f verification/oss_eq11_check.wl    # the independent Wolfram side
+```
+
+On the deterministic 8-channel case the two agree to ~1e-15; those reference
+values are pinned in `tests/processes.rs`.
+
 ## Acquisition model
 
 A `Scan` holds the per-step intensity rows recorded as the detector is shifted by
