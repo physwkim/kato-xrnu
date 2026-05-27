@@ -163,9 +163,11 @@ fn full_overlap(
 ///
 /// `block` is this step's block size; the parent block size is `2·block`. Within
 /// each parent and at each within-block position `r`, the two channels
-/// `i0 = parent_start + r` and `i1 = i0 + block` observe the same 2θ — `i0` at
-/// measurement 1 and `i1` at measurement 0 (the detector having shifted by
-/// `block`). The reference is the mean of their prior-corrected readings.
+/// `i0 = parent_start + r` and `i1 = i0 + block` co-observe one 2θ at every
+/// consecutive step pair `(p+1, p)`: shifting by `block` brings `i0` at step
+/// `p+1` onto the lab position `i1` saw at step `p`. The local factor is averaged
+/// over *all* such pairs the scan provides, so no supplied frame is dropped; for
+/// the canonical two-frame refinement this is exactly the single `(1, 0)` pair.
 fn within_parent_pairs(
     scan: &Scan,
     block: usize,
@@ -180,10 +182,11 @@ fn within_parent_pairs(
             block_size: parent,
         });
     }
-    if scan.n_steps() < 2 {
+    let n_steps = scan.n_steps();
+    if n_steps < 2 {
         return Err(KatoError::WrongMeasurementCount {
             expected: 2,
-            found: scan.n_steps(),
+            found: n_steps,
         });
     }
     let n_parents = n / parent;
@@ -195,14 +198,26 @@ fn within_parent_pairs(
             if edges.is_excluded(i0, n) || edges.is_excluded(i1, n) {
                 continue; // a pair needs both members to form a reference
             }
-            let v0 = scan.at(1, i0) * prior[i0];
-            let v1 = scan.at(0, i1) * prior[i1];
-            let reference = (v0 + v1) / 2.0;
-            if v0 > 0.0 {
-                out[i0] = ChannelFactor::Determined(reference / v0);
+            let (mut f0, mut f1) = (0.0, 0.0);
+            let (mut n0, mut n1) = (0u32, 0u32);
+            for p in 0..(n_steps - 1) {
+                let v0 = scan.at(p + 1, i0) * prior[i0];
+                let v1 = scan.at(p, i1) * prior[i1];
+                let reference = (v0 + v1) / 2.0;
+                if v0 > 0.0 {
+                    f0 += reference / v0;
+                    n0 += 1;
+                }
+                if v1 > 0.0 {
+                    f1 += reference / v1;
+                    n1 += 1;
+                }
             }
-            if v1 > 0.0 {
-                out[i1] = ChannelFactor::Determined(reference / v1);
+            if n0 > 0 {
+                out[i0] = ChannelFactor::Determined(f0 / f64::from(n0));
+            }
+            if n1 > 0 {
+                out[i1] = ChannelFactor::Determined(f1 / f64::from(n1));
             }
         }
     }

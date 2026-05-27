@@ -216,6 +216,41 @@ fn multi_step_drives_tfu_toward_poisson_floor() {
     );
 }
 
+#[test]
+fn ms_refinement_uses_all_frames_not_just_first_two() {
+    // F3 regression: a refinement step with more than two frames must use the
+    // extra co-observations, not silently drop them. Two MS runs whose
+    // refinement scan differs only by an added third frame (distinct values)
+    // must yield different factors.
+    let gains = synth::gains(4, 0.0, 1); // unit gains; refinement values hand-set
+    let coarse = synth::flat_scan(2, &gains, 1.0e5, 1); // block 2, full overlap
+
+    let f0 = vec![10.0, 20.0, 30.0, 40.0];
+    let f1 = vec![11.0, 19.0, 29.0, 41.0];
+    let f2 = vec![13.0, 17.0, 33.0, 37.0]; // distinct third frame
+
+    let refine2 = Scan::new(1, vec![f0.clone(), f1.clone()]).unwrap();
+    let refine3 = Scan::new(1, vec![f0, f1, f2]).unwrap();
+
+    let cf2 = multi_step(
+        &[MsStep::new(coarse.clone()), MsStep::new(refine2)],
+        EdgeExclusion::NONE,
+    )
+    .unwrap();
+    let cf3 = multi_step(
+        &[MsStep::new(coarse), MsStep::new(refine3)],
+        EdgeExclusion::NONE,
+    )
+    .unwrap();
+
+    let v2 = cf2.channels()[0].value().expect("determined");
+    let v3 = cf3.channels()[0].value().expect("determined");
+    assert!(
+        (v2 - v3).abs() > 1e-9,
+        "third refinement frame was ignored: {v2} == {v3}"
+    );
+}
+
 // --- behaviour / errors --------------------------------------------------
 
 #[test]
