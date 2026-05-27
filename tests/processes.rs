@@ -69,6 +69,35 @@ fn oss_noiseless_reduces_spread_far_below_xrnu() {
 }
 
 #[test]
+fn oss_sample_std_matches_paper_eq11_reference() {
+    // The default weight is the paper-faithful eq.(11) sample-std definition.
+    assert_eq!(OssWeight::default(), OssWeight::SampleStd);
+
+    // These factors were cross-verified against an independent Wolfram Language
+    // implementation of eq.(10)-(11) on this exact noiseless 8-channel case
+    // (see examples/xcheck_oss), agreeing to ~2e-16.
+    let scan = noiseless_scan(1, 8, &GAINS8, 1000.0);
+    let cf = optimized_single_step(&scan, EdgeExclusion::NONE, OssWeight::SampleStd).unwrap();
+    let wolfram = [
+        1.019_590_268_391_508_3,
+        0.925_985_222_505_391_8,
+        1.118_115_807_949_738,
+        0.959_162_871_302_379,
+        1.057_813_959_519_594_3,
+        0.839_098_869_525_341,
+        1.238_079_866_158_646_5,
+        0.969_368_643_187_109,
+    ];
+    for (i, &w) in wolfram.iter().enumerate() {
+        let got = cf.channels()[i].value().expect("determined");
+        assert!(
+            (got - w).abs() < 1e-12,
+            "ch{i}: SampleStd {got} vs Wolfram eq.11 {w}"
+        );
+    }
+}
+
+#[test]
 fn ms_noiseless_flattens_exactly() {
     // Block sizes 4 -> 2 -> 1 reach single-channel resolution => full flatten.
     let steps = vec![

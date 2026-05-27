@@ -9,26 +9,41 @@
 //! (eq. 11), `w_k(i) = 1/σ_k(i)²`.
 
 use crate::error::KatoError;
+use crate::figures::sample_std;
 use crate::reference::{ChannelFactor, CorrectionFactors, EdgeExclusion, Scan};
 
 /// How the per-reference-point weight `w_k(i) = 1/σ_k(i)²` is determined.
 ///
-/// Kato & Shigeta (2020) define `σ_k(i)` as the sample standard deviation of the
-/// local factor `c_OSS_k(i)`. Realised here as:
+/// Kato & Shigeta (2020) eq. (11) define `σ_k(i)` as the **sample standard
+/// deviation of the local factor `c_OSS_k(i)`** over the channels that share
+/// overlap level `k`. [`SampleStd`](Self::SampleStd) implements that definition
+/// literally and is the default; the other two are alternatives kept for
+/// cross-checking and are documented deviations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OssWeight {
-    /// Propagate Poisson counting statistics through `c = reference / observed`.
+    /// **Paper-faithful (eq. 11h).** `σ_k` is the sample standard deviation of
+    /// the local factors `{c_OSS_k(i)}` over the channels contributing to level
+    /// `k` — one weight `1/σ_k²` shared by every channel in that level. A level
+    /// whose local factors are perfectly consistent (`σ_k = 0`) carries no
+    /// inverse-variance weight and is skipped. **Default.**
+    #[default]
+    SampleStd,
+    /// Propagate Poisson counting statistics through `c = reference / observed`,
+    /// per channel.
     ///
     /// With the reference a mean of `n` channels, `var(reference) = reference/n`
     /// and `var(observed) = observed` (counts), giving
     /// `σ² = reference/(n·observed²) + reference²/observed³`.
-    /// This is the paper's premise (intensity constant within Poisson noise) and
-    /// favours the well-overlapped central points. **Default.**
-    #[default]
+    /// A *deviation* from eq. (11): the weight is per-channel from the Poisson
+    /// premise rather than the paper's per-level sample std. On a flat scatterer
+    /// it tracks [`SampleStd`](Self::SampleStd) closely (see
+    /// `examples/xcheck_oss`).
     PoissonPropagated,
     /// Weight purely by the number of overlapping channels (`w_k = n`).
     ///
-    /// A simpler proxy that ignores intensity, useful as a cross-check.
+    /// A simpler proxy that ignores intensity, useful as a cross-check; favours
+    /// the full-overlap level, which minimises the subset-normalisation bias of
+    /// the partial-overlap levels on a flat field.
     OverlapCount,
 }
 
@@ -91,22 +106,48 @@ pub fn optimized_single_step(
                 continue;
             }
             let reference = vals.iter().sum::<f64>() / count as f64;
+
+            // Paper eq. (11): `σ_k` is the sample std of the local factors over
+            // this level, so the weight is computed once and shared by every
+            // contributing channel. A perfectly consistent level (`σ_k = 0`) has
+            // no inverse-variance weight and is skipped entirely.
+            let level_w = if let OssWeight::SampleStd = weight {
+                let locs: Vec<f64> = chans
+                    .iter()
+                    .zip(&vals)
+                    .filter(|&(_, &v)| v > 0.0)
+                    .map(|(_, &v)| reference / v)
+                    .collect();
+                if locs.len() < 2 {
+                    continue;
+                }
+                let sd = sample_std(&locs);
+                if sd <= 0.0 {
+                    continue;
+                }
+                1.0 / (sd * sd)
+            } else {
+                0.0 // unused for the per-channel weights below
+            };
+
             for (&ch, &v) in chans.iter().zip(&vals) {
                 if v <= 0.0 {
                     continue;
                 }
                 let factor = reference / v;
-                let variance = match weight {
+                // reference > 0 (a positive `v` is included) and v > 0, so every
+                // branch yields a strictly positive weight.
+                let w = match weight {
+                    OssWeight::SampleStd => level_w,
                     OssWeight::PoissonPropagated => {
-                        reference / (count as f64 * v * v) + (reference * reference) / (v * v * v)
+                        let variance = reference / (count as f64 * v * v)
+                            + (reference * reference) / (v * v * v);
+                        1.0 / variance
                     }
-                    OssWeight::OverlapCount => 1.0 / count as f64,
+                    OssWeight::OverlapCount => count as f64,
                 };
-                if variance > 0.0 {
-                    let w = 1.0 / variance;
-                    wsum[ch] += w;
-                    wfsum[ch] += w * factor;
-                }
+                wsum[ch] += w;
+                wfsum[ch] += w * factor;
             }
         }
     }
