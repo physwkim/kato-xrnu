@@ -74,4 +74,4 @@ pub use correction::{MsStep, multi_step, single_step};
 pub use error::KatoError;
 pub use figures::{mean, pnr, poisson_sigma, sample_std, tfu};
 pub use oss::{OssWeight, optimized_single_step};
-pub use reference::{CorrectionFactors, EdgeExclusion, Scan};
+pub use reference::{ChannelFactor, CorrectionFactors, EdgeExclusion, Scan};

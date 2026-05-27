@@ -8,8 +8,8 @@
 //!     result of Kato et al. (Figs. 4–5), with OSS no worse than SS.
 
 use kato_xrnu::{
-    CorrectionFactors, EdgeExclusion, MsStep, OssWeight, Scan, multi_step, optimized_single_step,
-    single_step, synth, tfu,
+    ChannelFactor, CorrectionFactors, EdgeExclusion, MsStep, OssWeight, Scan, multi_step,
+    optimized_single_step, single_step, synth, tfu,
 };
 
 // --- helpers -------------------------------------------------------------
@@ -144,7 +144,7 @@ fn single_step_drives_tfu_toward_poisson_floor() {
     let recov: Vec<f64> = s
         .interior
         .clone()
-        .map(|i| cf.factors()[i] * s.gains[i])
+        .map(|i| cf.channels()[i].value().expect("interior determined") * s.gains[i])
         .collect();
     assert!(tfu(&recov) < 0.5, "SS gain recovery TFU = {}", tfu(&recov));
 }
@@ -190,19 +190,38 @@ fn multi_step_drives_tfu_toward_poisson_floor() {
 // --- behaviour / errors --------------------------------------------------
 
 #[test]
-fn excluded_edge_channels_get_identity_factor() {
+fn excluded_edge_channels_are_flagged_excluded() {
     let gains = synth::gains(64, 0.01, 7);
     let calib = synth::flat_scan(8, &gains, 1.0e5, 9);
     let cf = single_step(&calib, EdgeExclusion::symmetric(8)).unwrap();
     for i in 0..8 {
-        assert!(cf.excluded()[i]);
-        assert_eq!(cf.factors()[i], 1.0);
+        assert_eq!(cf.channels()[i], ChannelFactor::Excluded);
+        assert_eq!(cf.channels()[i].multiplier(), 1.0); // identity on apply
     }
     for i in 56..64 {
-        assert!(cf.excluded()[i]);
-        assert_eq!(cf.factors()[i], 1.0);
+        assert_eq!(cf.channels()[i], ChannelFactor::Excluded);
     }
+    // An interior channel is determined, not excluded.
+    assert!(cf.channels()[32].is_determined());
     assert!(!cf.excluded()[32]);
+}
+
+#[test]
+fn channel_with_no_reference_is_undetermined_not_excluded() {
+    // 4 channels, block 2 -> two within-block positions {0,2} and {1,3}.
+    // Exclude only channel 3 (high=1): position {1,3} loses its partner, so
+    // channel 1 can form no reference -> Undetermined, while it is NOT excluded.
+    let gains = synth::gains(4, 0.0, 1);
+    let scan = synth::flat_scan(2, &gains, 1.0e5, 1); // 2 steps
+    let cf = single_step(&scan, EdgeExclusion { low: 0, high: 1 }).unwrap();
+    assert_eq!(cf.channels()[3], ChannelFactor::Excluded);
+    assert_eq!(cf.channels()[1], ChannelFactor::Undetermined);
+    assert!(cf.channels()[0].is_determined());
+    assert!(cf.channels()[2].is_determined());
+    // The three states are distinguishable, and both non-determined apply as 1.0.
+    assert_eq!(cf.channels()[1].multiplier(), 1.0);
+    assert!(cf.undetermined()[1]);
+    assert!(!cf.excluded()[1]);
 }
 
 #[test]

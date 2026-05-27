@@ -107,73 +107,140 @@ impl EdgeExclusion {
     }
 }
 
+/// The correction outcome for a single channel.
+///
+/// Modelling the three cases as one sum type keeps them distinguishable: a bare
+/// factor of `1.0` previously meant *any* of "excluded", "undetermined" or
+/// "genuine unit gain", so a consumer could not tell a corrected channel from an
+/// uncorrected one. Here the illegal overlap is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChannelFactor {
+    /// A gain factor was estimated from the reference scan: `c ≈ 1/gain`.
+    Determined(f64),
+    /// The channel was excluded from the calculation (an edge zone).
+    Excluded,
+    /// No reference could be formed for this channel — e.g. fewer than two
+    /// co-observing channels survived edge exclusion, or the observed intensity
+    /// was non-positive. The channel was neither excluded nor corrected.
+    Undetermined,
+}
+
+impl ChannelFactor {
+    /// The multiplier to apply to a raw count: the estimated factor when
+    /// [`Determined`](ChannelFactor::Determined), otherwise identity (`1.0`), so
+    /// excluded and undetermined channels pass through unchanged.
+    #[inline]
+    pub fn multiplier(self) -> f64 {
+        match self {
+            ChannelFactor::Determined(c) => c,
+            ChannelFactor::Excluded | ChannelFactor::Undetermined => 1.0,
+        }
+    }
+
+    /// The estimated factor when [`Determined`](ChannelFactor::Determined), else
+    /// `None`.
+    #[inline]
+    pub fn value(self) -> Option<f64> {
+        match self {
+            ChannelFactor::Determined(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Whether a factor was estimated for this channel.
+    #[inline]
+    pub fn is_determined(self) -> bool {
+        matches!(self, ChannelFactor::Determined(_))
+    }
+}
+
 /// Per-channel multiplicative correction factors `c(i) ≈ 1/gain(i)`.
 ///
 /// Multiply a raw sample measurement by these factors to remove the XRNU gain.
+/// Each channel is a [`ChannelFactor`], so determined, excluded and undetermined
+/// channels are distinguishable rather than all collapsing to `1.0`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorrectionFactors {
-    factors: Vec<f64>,
-    excluded: Vec<bool>,
+    channels: Vec<ChannelFactor>,
 }
 
 impl CorrectionFactors {
-    pub(crate) fn new(factors: Vec<f64>, excluded: Vec<bool>) -> Self {
-        debug_assert_eq!(factors.len(), excluded.len());
-        Self { factors, excluded }
+    pub(crate) fn new(channels: Vec<ChannelFactor>) -> Self {
+        Self { channels }
     }
 
-    /// The per-channel factors. Excluded / undetermined channels hold `1.0`.
+    /// The per-channel correction outcomes.
     #[inline]
-    pub fn factors(&self) -> &[f64] {
-        &self.factors
+    pub fn channels(&self) -> &[ChannelFactor] {
+        &self.channels
+    }
+
+    /// Per-channel multipliers (identity for excluded / undetermined channels) —
+    /// the values [`apply`](Self::apply) uses. Allocates; prefer
+    /// [`channels`](Self::channels) to inspect the outcome.
+    pub fn multipliers(&self) -> Vec<f64> {
+        self.channels.iter().map(|c| c.multiplier()).collect()
     }
 
     /// Per-channel flag: `true` if the channel was excluded from the calculation.
-    #[inline]
-    pub fn excluded(&self) -> &[bool] {
-        &self.excluded
+    pub fn excluded(&self) -> Vec<bool> {
+        self.channels
+            .iter()
+            .map(|c| matches!(c, ChannelFactor::Excluded))
+            .collect()
+    }
+
+    /// Per-channel flag: `true` if no factor could be determined for the channel
+    /// (and it was not excluded).
+    pub fn undetermined(&self) -> Vec<bool> {
+        self.channels
+            .iter()
+            .map(|c| matches!(c, ChannelFactor::Undetermined))
+            .collect()
     }
 
     /// Number of channels.
     #[inline]
     pub fn len(&self) -> usize {
-        self.factors.len()
+        self.channels.len()
     }
 
     /// Whether there are no channels.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.factors.is_empty()
+        self.channels.is_empty()
     }
 
     /// Apply the correction to a raw measurement, returning the corrected copy.
+    /// Excluded and undetermined channels pass through unchanged.
     ///
     /// # Panics
     /// Panics if `raw.len()` differs from the number of channels.
     pub fn apply(&self, raw: &[f64]) -> Vec<f64> {
         assert_eq!(
             raw.len(),
-            self.factors.len(),
+            self.channels.len(),
             "raw length does not match channel count"
         );
         raw.iter()
-            .zip(&self.factors)
-            .map(|(&y, &c)| y * c)
+            .zip(&self.channels)
+            .map(|(&y, c)| y * c.multiplier())
             .collect()
     }
 
-    /// Apply the correction in place.
+    /// Apply the correction in place. Excluded and undetermined channels pass
+    /// through unchanged.
     ///
     /// # Panics
     /// Panics if `raw.len()` differs from the number of channels.
     pub fn apply_in_place(&self, raw: &mut [f64]) {
         assert_eq!(
             raw.len(),
-            self.factors.len(),
+            self.channels.len(),
             "raw length does not match channel count"
         );
-        for (y, &c) in raw.iter_mut().zip(&self.factors) {
-            *y *= c;
+        for (y, c) in raw.iter_mut().zip(&self.channels) {
+            *y *= c.multiplier();
         }
     }
 }

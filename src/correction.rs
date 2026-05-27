@@ -4,7 +4,7 @@
 //! cleaner block-recursive form of Kato & Shigeta (2020) Fig. 2 and eq. (1)–(9).
 
 use crate::error::KatoError;
-use crate::reference::{CorrectionFactors, EdgeExclusion, Scan};
+use crate::reference::{ChannelFactor, CorrectionFactors, EdgeExclusion, Scan};
 
 /// Single-step (SS) process — Kato et al. (2019) eq. (1)–(2).
 ///
@@ -19,7 +19,7 @@ pub fn single_step(scan: &Scan, edges: EdgeExclusion) -> Result<CorrectionFactor
     edges.validate(n)?;
     let prior = vec![1.0; n];
     let factors = full_overlap(scan, &prior, &edges)?;
-    Ok(CorrectionFactors::new(factors, excluded_mask(n, &edges)))
+    Ok(finalize(factors, &edges, n))
 }
 
 /// One step of a multi-step correction.
@@ -78,14 +78,31 @@ pub fn multi_step(steps: &[MsStep], edges: EdgeExclusion) -> Result<CorrectionFa
                 cur: block,
             });
         }
-        let ck = within_parent_pairs(&step.scan, block, &accum, &edges)?;
+        // The prior passed to this step is the running product of factors so far
+        // (identity for channels not yet determined).
+        let prior: Vec<f64> = accum.iter().map(|c| c.multiplier()).collect();
+        let ck = within_parent_pairs(&step.scan, block, &prior, &edges)?;
         for (a, c) in accum.iter_mut().zip(&ck) {
-            *a *= c;
+            *a = merge_step(*a, *c);
         }
         prev_block = block;
     }
 
-    Ok(CorrectionFactors::new(accum, excluded_mask(n, &edges)))
+    Ok(finalize(accum, &edges, n))
+}
+
+/// Combine the running accumulated factor with this step's factor (eq. 13's
+/// product `c1·c2·…`). A channel is determined overall if any step determined
+/// it; undetermined steps contribute identity.
+fn merge_step(acc: ChannelFactor, step: ChannelFactor) -> ChannelFactor {
+    match (acc, step) {
+        (ChannelFactor::Determined(a), ChannelFactor::Determined(s)) => {
+            ChannelFactor::Determined(a * s)
+        }
+        (ChannelFactor::Determined(a), _) => ChannelFactor::Determined(a),
+        (_, ChannelFactor::Determined(s)) => ChannelFactor::Determined(s),
+        _ => ChannelFactor::Undetermined,
+    }
 }
 
 /// Full-overlap factor estimate for one scan, given the product of prior factors.
@@ -95,7 +112,11 @@ pub fn multi_step(steps: &[MsStep], edges: EdgeExclusion) -> Result<CorrectionFa
 /// `pos + j·block` observes the common 2θ at step `n_blocks - 1 - j`. The
 /// reference is the mean of the prior-corrected intensities over the included
 /// blocks; the returned factor `c(i) = reference / (observed(i) · prior(i))`.
-fn full_overlap(scan: &Scan, prior: &[f64], edges: &EdgeExclusion) -> Result<Vec<f64>, KatoError> {
+fn full_overlap(
+    scan: &Scan,
+    prior: &[f64],
+    edges: &EdgeExclusion,
+) -> Result<Vec<ChannelFactor>, KatoError> {
     let n = scan.n_channels();
     let block = scan.shift_per_step();
     if !n.is_multiple_of(block) {
@@ -112,7 +133,7 @@ fn full_overlap(scan: &Scan, prior: &[f64], edges: &EdgeExclusion) -> Result<Vec
         });
     }
 
-    let mut out = vec![1.0; n];
+    let mut out = vec![ChannelFactor::Undetermined; n];
     for pos in 0..block {
         // Channels at this within-block position, and their corrected readings.
         let mut chans = Vec::with_capacity(n_blocks);
@@ -131,7 +152,7 @@ fn full_overlap(scan: &Scan, prior: &[f64], edges: &EdgeExclusion) -> Result<Vec
         let reference = vals.iter().sum::<f64>() / vals.len() as f64;
         for (&ch, &v) in chans.iter().zip(&vals) {
             if v > 0.0 {
-                out[ch] = reference / v;
+                out[ch] = ChannelFactor::Determined(reference / v);
             }
         }
     }
@@ -150,7 +171,7 @@ fn within_parent_pairs(
     block: usize,
     prior: &[f64],
     edges: &EdgeExclusion,
-) -> Result<Vec<f64>, KatoError> {
+) -> Result<Vec<ChannelFactor>, KatoError> {
     let n = scan.n_channels();
     let parent = block * 2;
     if !n.is_multiple_of(parent) {
@@ -166,7 +187,7 @@ fn within_parent_pairs(
         });
     }
     let n_parents = n / parent;
-    let mut out = vec![1.0; n];
+    let mut out = vec![ChannelFactor::Undetermined; n];
     for g in 0..n_parents {
         for r in 0..block {
             let i0 = g * parent + r;
@@ -178,16 +199,25 @@ fn within_parent_pairs(
             let v1 = scan.at(0, i1) * prior[i1];
             let reference = (v0 + v1) / 2.0;
             if v0 > 0.0 {
-                out[i0] = reference / v0;
+                out[i0] = ChannelFactor::Determined(reference / v0);
             }
             if v1 > 0.0 {
-                out[i1] = reference / v1;
+                out[i1] = ChannelFactor::Determined(reference / v1);
             }
         }
     }
     Ok(out)
 }
 
-fn excluded_mask(n: usize, edges: &EdgeExclusion) -> Vec<bool> {
-    (0..n).map(|c| edges.is_excluded(c, n)).collect()
+/// Overlay edge exclusion onto a producer's per-channel result. Edge-zone
+/// channels become [`ChannelFactor::Excluded`]; all others keep their
+/// determined / undetermined status. This is the single owner of the `Excluded`
+/// classification.
+fn finalize(mut factors: Vec<ChannelFactor>, edges: &EdgeExclusion, n: usize) -> CorrectionFactors {
+    for (i, f) in factors.iter_mut().enumerate() {
+        if edges.is_excluded(i, n) {
+            *f = ChannelFactor::Excluded;
+        }
+    }
+    CorrectionFactors::new(factors)
 }

@@ -9,7 +9,7 @@
 //! (eq. 11), `w_k(i) = 1/σ_k(i)²`.
 
 use crate::error::KatoError;
-use crate::reference::{CorrectionFactors, EdgeExclusion, Scan};
+use crate::reference::{ChannelFactor, CorrectionFactors, EdgeExclusion, Scan};
 
 /// How the per-reference-point weight `w_k(i) = 1/σ_k(i)²` is determined.
 ///
@@ -113,13 +113,14 @@ pub fn optimized_single_step(
 
     let factors = (0..n)
         .map(|ch| {
-            if wsum[ch] > 0.0 {
-                wfsum[ch] / wsum[ch]
+            if edges.is_excluded(ch, n) {
+                ChannelFactor::Excluded
+            } else if wsum[ch] > 0.0 {
+                ChannelFactor::Determined(wfsum[ch] / wsum[ch])
             } else {
-                1.0
+                ChannelFactor::Undetermined
             }
         })
         .collect();
-    let excluded = (0..n).map(|c| edges.is_excluded(c, n)).collect();
-    Ok(CorrectionFactors::new(factors, excluded))
+    Ok(CorrectionFactors::new(factors))
 }
